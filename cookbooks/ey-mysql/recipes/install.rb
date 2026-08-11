@@ -1,0 +1,203 @@
+ey_cloud_report "mysql installation" do
+  message "Installation of MySQL packages and dependencies started." # AI-GEN - chatgpt
+end
+
+# Percona Server 5.7 is EOL and never published an Ubuntu 24.04 (Noble) suite —
+# `repo.percona.com/ps-57/apt/dists/noble/Release` is 404. Adding it on Noble
+# makes the subsequent `apt-get update` fail hard ("does not have a Release
+# file"), aborting the whole mysql install even when the environment only wants
+# MySQL 8.x. Stack v8 denies MySQL 5.7 anyway (StackRestrictions), so skip the
+# ps-57 repo on Noble. v6/v7 (focal) still get it (Percona serves ps-57 focal).
+unless node["platform_version"].to_s.start_with?("24.04")
+  apt_repository "mysql57" do
+    uri "http://repo.percona.com/ps-57/apt"
+    distribution "#{`lsb_release -cs`.strip}"
+    components ["main"]
+    keyserver "keyserver.ubuntu.com"
+    key "9334A25F8507EFA5"
+  end.run_action(:add)
+end
+
+apt_repository "mysql80" do
+  uri "http://repo.percona.com/ps-80/apt"
+  distribution "#{`lsb_release -cs`.strip}"
+  components ["main"]
+  keyserver "keyserver.ubuntu.com"
+  key "9334A25F8507EFA5"
+end.run_action(:add)
+
+apt_repository "mysql84" do
+  uri "http://repo.percona.com/ps-84-lts/apt"
+  distribution "#{`lsb_release -cs`.strip}"
+  components ["main"]
+  keyserver "keyserver.ubuntu.com"
+  key "9334A25F8507EFA5"
+end.run_action(:add)
+
+known_versions = []
+install_version = node["mysql"]["latest_version"]
+# AI-GEN START - chatgpt
+short_version = node["mysql"]["short_version"]
+instance_role = node["dna"]["instance_role"]
+# AI-GEN END
+
+# AI-GEN START - chatgpt
+`apt-cache madison percona-server-server-#{short_version} | awk '{print $3}' && apt-cache madison percona-server-server | awk '{print $3}'`.split(/\n+/).each do |v|
+  known_versions.append(v.split("-")[0])
+end
+# AI-GEN END
+package_version = known_versions.detect { |v| v =~ /^#{install_version}/ }
+
+# AI-GEN START - chatgpt
+if node.engineyard.environment.lock_db_version?
+  lock_db_version = node.engineyard.environment.components.find_all { |e| e["key"] == "lock_db_version" }.first["value"]
+end
+# AI-GEN END
+
+lock_version_file = "/db/.lock_db_version"
+db_running = `mysql -N -e "select 1;" 2> /dev/null`.strip == "1"
+
+# Create or delete /db/.lock_db_version - AI-GEN - chatgpt
+if instance_role[/^(db|solo)/] # AI-GEN - chatgpt
+  execute "dropping lock version file" do
+    command "echo $(mysql --version | grep -E -o '(Distrib|Ver) [0-9]+\.[0-9]+\.[0-9]+' | awk '{print $NF}') > #{lock_version_file}"
+    action :run
+    only_if { lock_db_version && !::File.exist?(lock_version_file) && db_running }
+  end
+
+  execute "remove lock version file" do
+    command "rm #{lock_version_file}"
+    only_if { !lock_db_version && ::File.exist?(lock_version_file) }
+  end
+end
+
+# AI-GEN START - chatgpt
+# Install the dependencies of the Percona packages.
+# On Ubuntu 24.04 (Noble) libaio1 was renamed to libaio1t64 as part of the
+# 64-bit time_t transition; the old name has no candidate on Noble and a
+# hardcoded "libaio1" fails the whole mysql install. Select the right name per
+# release (focal/v6-v7 still ship libaio1).
+libaio_package = node["platform_version"].to_s.start_with?("24.04") ? "libaio1t64" : "libaio1"
+["debsums", libaio_package, "libmecab2"].each do |package|
+  package package do
+    action :install
+  end
+end
+# AI-GEN END
+
+# AI-GEN START - chatgpt
+package "libmysqlclient-dev" do
+  action :install
+end
+# AI-GEN END
+
+# Installs MySQL client to all instances - AI-GEN - chatgpt
+# Note: For db/solo instances, client is installed with version pinning in the packages loop below
+# This block only installs client on app instances (which don't install server packages)
+if node.engineyard.instance.arch_type == "arm64"
+  # AI-GEN START - chatgpt
+  package "mysql-client" do
+    action :install
+  end
+  # AI-GEN END
+else
+# AI-GEN START - cursor
+  case short_version
+  when "5.7"
+    package "percona-server-client-5.7" do
+      action :install
+      not_if { instance_role[/^(db|solo)/] } # Skip on db/solo - installed with version pinning in packages loop
+    end
+  when "8.0", "8.4"
+    package "percona-server-client" do
+      action :install
+      not_if { instance_role[/^(db|solo)/] } # Skip on db/solo - installed with version pinning in packages loop
+    end
+  end
+# AI-GEN END
+end
+
+# AI-GEN START - chatgpt
+# Package order: common must come before client (client depends on common)
+packages = case short_version
+           when "5.7"
+             ["percona-server-common-5.7", "percona-server-client-5.7", "libperconaserverclient20", "percona-server-server-5.7"]
+           when "8.0"
+             ["percona-server-common", "percona-server-client", "libperconaserverclient21", "percona-server-server"]
+           when "8.4"
+             ["percona-server-common", "percona-server-client", "libperconaserverclient24", "percona-server-server"]
+           end
+# AI-GEN END
+
+if instance_role[/db|solo/] # AI-GEN - chatgpt
+  directory "/etc/systemd/system/mysql.service.d" do
+    owner "root"
+    group "root"
+    mode "755"
+    recursive true
+  end
+
+  cookbook_file "/etc/systemd/system/mysql.service.d/override.conf" do
+    source "mysql_override.conf"
+    owner "root"
+    group "root"
+    mode "644"
+    notifies :run, "execute[reload-systemd]", :immediately
+  end
+end
+
+install_version = if ::File.exist?(lock_version_file)  # AI-GEN - chatgpt
+                    `cat #{lock_version_file}`.strip   # AI-GEN - chatgpt
+                  else
+                    node["mysql"]["latest_version"]
+                  end
+
+if package_version.nil? && node.engineyard.instance.arch_type == "amd64"
+  raise "Chef does not know about MySQL version #{install_version}. The current known versions of MySQL are #{known_versions.join(', ')}. Please use them or contact support for more assistance." # AI-GEN - chatgpt
+end
+
+package_version = `apt-cache madison #{packages.last} | awk '{print $3}' | grep #{install_version}`.split(/\n/).last # AI-GEN - chatgpt
+
+execute "set-deb-confs" do
+  command %(echo "#{packages.last} #{packages.last}/root-pass password #{node.engineyard.environment['db_admin_password']}" | debconf-set-selections && echo "#{packages.last} #{packages.last}/re-root-pass password #{node.engineyard.environment['db_admin_password']}" | debconf-set-selections) # AI-GEN - chatgpt
+end
+
+# Remove packages if installed with wrong version (from previous failed runs)
+# This ensures clean installation with correct versions
+if instance_role[/^(db|solo)/] && node.engineyard.instance.arch_type == "amd64"
+  packages.each do |package|
+    execute "remove-#{package}-if-wrong-version" do
+      command "apt-get remove -y #{package} || true"
+      only_if do
+        installed_version = `dpkg -l 2>/dev/null | grep '^ii.*#{package}' | awk '{print $3}' 2>/dev/null`.strip
+        installed_version != "" && installed_version != package_version
+      end
+    end
+  end
+end
+
+# Loop through the packages because chef doesn't understand you install the dependency before even in the array... AI-GEN - chatgpt
+if instance_role[/^(db|solo)/] # AI-GEN - chatgpt
+  packages.each do |package|
+    apt_package package do
+      version package_version # AI-GEN - chatgpt
+      action :install
+      options "--yes --fix-missing --allow-downgrades" # AI-GEN - chatgpt - allow-downgrades needed if packages already installed
+      ignore_failure true
+      only_if { node.engineyard.instance.arch_type == "amd64" }
+    end
+  end
+end
+
+ey_cloud_report "mysql installation" do
+  message "Installation of MySQL packages and dependencies finished." # AI-GEN - chatgpt
+end
+
+if instance_role[/^(db|solo)/] && ["8.0", "8.4"].include?(short_version) # AI-GEN - chatgpt
+  bash "Set my.cnf alternatives for MySQL #{short_version}" do
+    code <<-EOS
+      update-alternatives --install /etc/mysql/my.cnf my.cnf /etc/mysql/percona-server.cnf 1000
+      update-alternatives --set my.cnf /etc/mysql/percona-server.cnf
+    EOS
+  end
+end

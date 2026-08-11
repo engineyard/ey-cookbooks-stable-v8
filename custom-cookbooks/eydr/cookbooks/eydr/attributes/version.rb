@@ -1,0 +1,16 @@
+case node["dna"]["engineyard"]["environment"]["db_stack_name"]
+when "mysql8_0"
+  default["mysql"]["latest_version"] = "8.0.42"
+  default["mysql"]["virtual"] = "8.0"
+  default["mysql"]["short_version"] = "8.0"
+  default["mysql"]["datadir"] = "/db/mysql/#{node['mysql']['short_version']}/data/"
+when "mysql8_4"
+  default["mysql"]["latest_version"] = "8.4.5"
+  default["mysql"]["virtual"] = "8.4"
+  default["mysql"]["short_version"] = "8.4"
+  default["mysql"]["datadir"] = "/db/mysql/#{node['mysql']['short_version']}/data/"
+when "postgres16"
+  default["postgresql"]["latest_version"] = "16.9"
+  default["postgresql"]["short_version"] = "16"
+  default["postgresql"]["datadir"] = "/db/postgresql/#{node['postgresql']['short_version']}/data/"
+end

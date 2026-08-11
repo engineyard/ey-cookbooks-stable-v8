@@ -1,0 +1,9 @@
+[mysqld]
+server-id                       = <%= @server_id %>
+read_only
+relay-log                       = <%= @datadir %>/replica-relay-bin
+relay-log-index                 = <%= @datadir %>/replica-relay-bin.index
+log-bin                         = <%= @datadir %>/source-bin
+log-bin-index                   = <%= @datadir %>/source-bin.index
+log_replica_updates             = 1
+binlog_format                   = row

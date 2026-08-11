@@ -1,0 +1,48 @@
+[Unit]
+Description=PostgreSQL
+# Disable systemd's start-rate limiter for the master DB. With the default
+# limiter (StartLimitBurst=5 / StartLimitIntervalSec=10s), a unit that exceeds
+# the burst lands in a "start-limit-hit" failed state that a plain
+# `systemctl start` REFUSES to clear (it needs `systemctl reset-failed` first).
+# That would re-introduce the exact bug this change fixes: the Chef
+# `service[postgresql]` Apply step only does a status-guarded :start (never
+# reset-failed), so a limiter lockout would again leave a full env "Apply"
+# unable to bring the master back. Setting the interval to 0 makes retries
+# unbounded: an unrecoverable cause (corrupt datadir, disk full) keeps the unit
+# visibly "activating/auto-restart" and still surfaces via the check_postgres
+# monitoring alerts, while a transient cause self-heals on the next retry and
+# Apply's :start always works. This is the correct trade-off for a
+# single-master DB with no automatic failover.
+StartLimitIntervalSec=0
+
+[Service]
+Type=forking
+# Point systemd at PostgreSQL's own pidfile. With Type=forking and no PIDFile,
+# systemd only *guesses* the postmaster's main PID from the cgroup after
+# pg_ctl's launcher exits. That guess desyncs from reality (e.g. an
+# out-of-band pg_ctl restart, or a crash where a backend lingers in the
+# cgroup), leaving systemd reporting the wrong MainPID or a stale active/failed
+# state. That desync is what makes a full env "Apply" unable to recover a
+# down master: the Chef `service[postgresql]` :start is status-guarded, so a
+# wrong "active" reading makes it a no-op. Tracking the real postmaster.pid
+# keeps systemd's view accurate so :start reliably fires when PG is actually
+# down.
+PIDFile=<%= ::File.join(@data_directory, "postmaster.pid") %>
+ExecStart=/usr/lib/postgresql/<%= @version %>/bin/pg_ctl start -D <%= @data_directory %> -w -t <%= @pg_start_timeout %>
+TimeoutStartSec=<%= @systemd_start_timeout %>
+ExecStop=/usr/lib/postgresql/<%= @version %>/bin/pg_ctl stop -D <%= @data_directory %> -m fast
+ExecReload=/usr/lib/postgresql/<%= @version %>/bin/pg_ctl reload -D <%= @data_directory %>
+# Auto-recover the master DB when the postmaster exits unexpectedly (crash,
+# OOM kill, or an operator "restart Master Database" that leaves PG down).
+# Without this the unit defaults to Restart=no, so a restart event leaves PG
+# down with no auto-recovery and the app's /db endpoint stays unreachable
+# until a manual start. on-failure (not always) so a deliberate `systemctl
+# stop` for maintenance/failover is respected and not fought.
+Restart=on-failure
+RestartSec=5
+OOMScoreAdjust=-900
+User=postgres
+Group=postgres
+
+[Install]
+WantedBy=multi-user.target

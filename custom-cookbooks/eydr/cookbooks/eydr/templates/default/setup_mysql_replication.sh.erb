@@ -1,0 +1,39 @@
+#!/bin/sh
+/etc/init.d/mysql stop
+
+rm -rf <%= @datadir %>*
+
+# Stream a backup from the source (initiate) host to this replica host.
+# XtraBackup 8.x uses `xtrabackup --backup` directly; the `innobackupex`
+# wrapper was removed in 8.x.
+ssh -i /home/<%= @user %>/.ssh/eydr_key -p 22 -o StrictHostKeyChecking=no -o TCPKeepAlive=yes <%= @db_user %>@<%= @initiate_public_hostname %> 'sudo xtrabackup --backup --user root --password <%= @master_pass %> --safe-slave-backup --compress --stream=xbstream --target-dir=/tmp | ssh -i /home/<%= @user %>/.ssh/eydr_key -o StrictHostKeyChecking=no -o TCPKeepAlive=yes <%= @user %>@<%= @slave_public_hostname %> "sudo xbstream -x -C <%= @datadir %>"'
+
+cd <%= @datadir %> && for bf in `find . -iname "*\.qp"`; do qpress -df $bf $(dirname $bf) && rm $bf; done
+
+# Prepare the backup for use (replaces `innobackupex --apply-log`).
+xtrabackup --prepare --use-memory=1G --target-dir=<%= @datadir %>/
+
+chown -R mysql:mysql /db/mysql/
+
+/etc/init.d/mysql start
+
+replica_status=`mysql -u root -p<%= @master_pass %> -e "show replica status \G"`
+if [ ! -z "$replica_status" ]; then mysql -u root -p<%= @master_pass %> -e "stop replica"; fi
+
+# MySQL 8.4: inline user creation via GRANT ... IDENTIFIED BY is removed.
+# Create the user explicitly (caching_sha2_password is the 8.4 default auth
+# plugin) then grant privileges separately.
+mysql -u root -p<%= @master_pass %> -e "CREATE USER IF NOT EXISTS '<%= @db_user %>'@'%' IDENTIFIED WITH caching_sha2_password BY '<%= @db_pass %>';"
+mysql -u root -p<%= @master_pass %> -e "GRANT ALL PRIVILEGES ON <%= @db_name %>.* TO '<%= @db_user %>'@'%';"
+
+<% if @initiate_public_hostname == @master_public_hostname %>
+source_log_file=`cat <%= @datadir %>xtrabackup_binlog_info | awk '{print $1}'`
+source_log_pos=`cat <%= @datadir %>xtrabackup_binlog_info | awk '{print $2}'`
+mysql -u root -p<%= @master_pass %> -e "CHANGE REPLICATION SOURCE TO SOURCE_HOST='127.0.0.1', SOURCE_PORT=13306, SOURCE_USER='replication', SOURCE_PASSWORD='<%= @master_pass %>', SOURCE_LOG_FILE='$source_log_file', SOURCE_LOG_POS=$source_log_pos ;"
+<% else %>
+source_log_file=`cat <%= @datadir %>/xtrabackup_slave_info | awk '{print $4}'`
+source_log_pos=`cat <%= @datadir %>/xtrabackup_slave_info | awk '{print $5}'`
+mysql -u root -p<%= @master_pass %> -e "CHANGE REPLICATION SOURCE TO SOURCE_HOST='127.0.0.1', SOURCE_PORT=13306, SOURCE_USER='replication', SOURCE_PASSWORD='<%= @master_pass %>', $source_log_file $source_log_pos;"
+<% end %>
+
+mysql -u root -p<%= @master_pass %> -e "start replica;"
