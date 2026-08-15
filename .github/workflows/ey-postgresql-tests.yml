@@ -1,11 +1,14 @@
 name: ey-postgresql tests
 
-# Runs the ey-postgresql regression suite as a PR check. Covers GHI-21914:
-# the pg_extension custom resource must read its properties via new_resource.*
-# under Chef 17, quote VERSION/FROM in CREATE EXTENSION, and the
-# server_configure "process extensions.json" block must resolve the resource
-# via declare_resource (not the stale Chef::Resource::PostgresqlPgExtension).
-# Ported from ey-cookbooks-stable-v7 for the v8 target (PostgreSQL 16, Noble).
+# Runs the ey-postgresql regression suite as a PR check. Covers:
+# - GHI-21914: the pg_extension custom resource must read its properties via
+#   new_resource.* under Chef 17, quote VERSION/FROM in CREATE EXTENSION, and
+#   the server_configure "process extensions.json" block must resolve the
+#   resource via declare_resource (not the stale Chef::Resource::…).
+#   Ported from ey-cookbooks-stable-v7 for the v8 target (PostgreSQL 16, Noble).
+# - ey-all#189: resolve_pg_package_version falls back to newest-in-series
+#   rather than raising when a pinned patch is absent from the apt repo.
+#   Pure-Ruby unit tests (version_resolution_spec.rb), no Chef or DB required.
 
 on:
   pull_request:
@@ -80,3 +83,7 @@ jobs:
       - name: No-DB regression guard
         # chef-solo is already on PATH (Gem.bindir added in the install step).
         run: ./cookbooks/ey-postgresql/spec/pg_extension_regression.sh
+
+      - name: Version resolution unit tests (ey-all#189)
+        working-directory: cookbooks/ey-postgresql/spec
+        run: bundle exec ruby version_resolution_spec.rb

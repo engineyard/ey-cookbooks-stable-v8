@@ -14,7 +14,14 @@ postgres_version = node["postgresql"]["short_version"]
 install_version = node["postgresql"]["latest_version"]
 known_versions = []
 `apt-cache madison postgresql-server-dev-#{postgres_version} |awk '{print $3'}`.split(/\n+/).each { |v| known_versions.append(v.split("-")[0]) }
-package_version = known_versions.detect { |v| v =~ /^#{install_version}/ }
+# EY_POSTGRES_VERSION is an explicit customer pin (attributes/version.rb folds it
+# into node["postgresql"]["latest_version"] before this recipe runs, so we detect
+# it directly from the env var rather than from latest_version itself). Any other
+# case is the default per-stack attribute pin, which falls back to the newest
+# patch in the series instead of raising. The lock_version_file pin (also
+# explicit) is only known at converge time -- see the "check lock version" block.
+explicit_env_pin = !fetch_env_var(node, "EY_POSTGRES_VERSION").nil?
+package_version = resolve_pg_package_version(known_versions, install_version, postgres_version, explicit_pin: explicit_env_pin)
 
 execute "dropping lock version file" do
   command "echo #{running_pg_version} > #{node['lock_version_file']}"
@@ -51,15 +58,19 @@ end
 # on template "/tmp/src/postgresql/install.sh"
 ruby_block "check lock version" do
   block do
-    install_version = if File.exist?(node["lock_version_file"])
+    lock_version_present = File.exist?(node["lock_version_file"])
+    install_version = if lock_version_present
                         `cat #{node["lock_version_file"]}`.strip
                       else
                         node["postgresql"]["latest_version"]
                       end
-    package_version = known_versions.detect { |v| v =~ /^#{install_version}/ }
-    if package_version.nil?
-      raise "Chef does not know about PostgreSQL version #{install_version} the current known versions of PostgreSQL for version #{postgres_version} are the following: #{known_versions} or contact support for more assistance"
-    end
+    # lock_version_file and EY_POSTGRES_VERSION are both explicit, deliberate
+    # customer pins -- require an exact match and raise if it's gone rather
+    # than silently drifting it. Otherwise this is the default per-stack
+    # attribute pin, which falls back to the newest patch in the series.
+    # See libraries/helpers.rb#resolve_pg_package_version.
+    explicit_pin = lock_version_present || !fetch_env_var(node, "EY_POSTGRES_VERSION").nil?
+    package_version = resolve_pg_package_version(known_versions, install_version, postgres_version, explicit_pin: explicit_pin)
     run_context.resource_collection.find(template: "/tmp/src/postgresql/install.sh").variables package_version: package_version, postgres_version: postgres_version
   end
 end
