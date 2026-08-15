@@ -18,6 +18,14 @@ module PostgreSQL
     #                     When false (default attribute pin) fall back to the newest
     #                     patch available within the same major series.
     #
+    # NOTE: server_install.rb runs on every Chef converge for db/app roles, not only
+    # on first boot -- so the fallback path can fire on an already-provisioned,
+    # running instance during a routine reconverge, not just a fresh install. A
+    # customer who wants to guarantee their running patch version never changes
+    # automatically should enable lock_db_version (writes /db/.lock_version_file
+    # with the exact running version), which makes their pin explicit_pin: true
+    # and therefore exact-match-or-raise rather than fallback.
+    #
     # Version matching uses Gem::Version for component-wise ordering so that
     # "16.10" sorts newer than "16.4" (lexical order gets this wrong).
     # Series membership is determined by matching the leading components of each
@@ -59,11 +67,19 @@ module PostgreSQL
               "Known versions: #{known_versions}. Contact support."
       end
 
-      best = in_series.max_by { |v| Gem::Version.new(v) }
+      best = in_series.max_by do |v|
+        begin
+          Gem::Version.new(v)
+        rescue ArgumentError
+          Gem::Version.new("0")
+        end
+      end
       Chef::Log.warn(
         "ey-postgresql: pinned version #{install_version} is not available in the apt repo. " \
         "Falling back to newest available patch in series #{short_version}: #{best}. " \
-        "To suppress this warning, remove the stale pin."
+        "This also applies to already-provisioned instances during reconverge — to pin the " \
+        "exact running version and prevent automatic patch changes, enable lock_db_version " \
+        "in the environment settings. To suppress this warning, update attributes/version.rb."
       )
       best
     end

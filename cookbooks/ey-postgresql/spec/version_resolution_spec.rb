@@ -14,7 +14,11 @@
 #          must resolve via component-wise Gem::Version comparison, not string prefix.
 #   - AC5: fallback to newest-in-series when pinned patch is absent.
 #          Explicit lock-file / EY_POSTGRES_VERSION pin honoured exactly (raises
-#          rather than silently drifting a deliberate customer pin).
+#          rather than silently drifting a deliberate customer pin). An
+#          already-running instance (pg_running at converge time) is treated
+#          the same as an explicit pin -- a routine reconverge never silently
+#          swaps a live instance's installed patch version; only a genuinely
+#          fresh install (PostgreSQL not yet running) gets the fallback.
 #
 # The helper is loaded by extracting the module from the library file directly
 # to avoid requiring Chef infrastructure.
@@ -181,6 +185,36 @@ class VersionResolutionTest < Minitest::Test
       resolve_pg_package_version(known, "11.16", "11", explicit_pin: true)
     end
     assert_match(/explicitly pinned/, err.message)
+  end
+
+  # -------------------------------------------------------------------------
+  # Already-running instance reconverge: server_install.rb passes explicit_pin:
+  # true when pg_running returns true at converge time. This ensures that a
+  # routine Chef Apply against an already-running instance never silently swaps
+  # its installed PostgreSQL patch to a different version just because the default
+  # attribute pin has aged out of the apt archive. Only fresh installs (pg not
+  # yet running) get the fallback-to-newest-in-series behaviour.
+  # -------------------------------------------------------------------------
+
+  def test_reconverge_running_instance_raises_not_falls_back
+    # Simulates: pg_running == true at converge, 16.4 pin has aged out.
+    # server_install.rb passes explicit_pin: true -> must raise, not silently
+    # install 16.15 as a side effect of an unrelated Apply.
+    known = %w[16.15 16.14 16.13 16.12 16.11 16.10]
+    err = assert_raises(RuntimeError) do
+      resolve_pg_package_version(known, "16.4", "16", explicit_pin: true)
+    end
+    assert_match(/explicitly pinned/, err.message,
+                 "should raise rather than silently swapping live instance's patch version")
+    assert_empty Chef::Log.warn_messages
+  end
+
+  def test_reconverge_running_instance_exact_match_succeeds
+    # pg_running == true but 16.4 is still in the archive -- happy path.
+    known = %w[16.15 16.14 16.4 16.3]
+    result = resolve_pg_package_version(known, "16.4", "16", explicit_pin: true)
+    assert_equal "16.4", result
+    assert_empty Chef::Log.warn_messages
   end
 
   # -------------------------------------------------------------------------
