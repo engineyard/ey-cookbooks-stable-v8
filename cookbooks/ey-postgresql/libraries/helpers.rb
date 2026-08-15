@@ -19,12 +19,15 @@ module PostgreSQL
     #                     patch available within the same major series.
     #
     # NOTE: server_install.rb runs on every Chef converge for db/app roles, not only
-    # on first boot -- so the fallback path can fire on an already-provisioned,
-    # running instance during a routine reconverge, not just a fresh install. A
-    # customer who wants to guarantee their running patch version never changes
-    # automatically should enable lock_db_version (writes /db/.lock_version_file
-    # with the exact running version), which makes their pin explicit_pin: true
-    # and therefore exact-match-or-raise rather than fallback.
+    # on first boot -- so the fallback path can fire on an already-provisioned
+    # instance during a routine reconverge, not just a fresh install. The call
+    # site treats "the postgresql package is already installed on this node"
+    # (checked via dpkg-query, which works on both DB and app-tier nodes) the
+    # same as an explicit pin, so this fallback only ever fires on a genuinely
+    # fresh install. A customer who wants to guarantee their running patch
+    # version never changes automatically should also enable lock_db_version
+    # (writes /db/.lock_version_file with the exact running version), which
+    # makes their pin explicit_pin: true regardless of install state.
     #
     # Version matching uses Gem::Version for component-wise ordering so that
     # "16.10" sorts newer than "16.4" (lexical order gets this wrong).

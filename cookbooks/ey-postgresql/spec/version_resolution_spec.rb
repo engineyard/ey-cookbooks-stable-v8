@@ -14,11 +14,13 @@
 #          must resolve via component-wise Gem::Version comparison, not string prefix.
 #   - AC5: fallback to newest-in-series when pinned patch is absent.
 #          Explicit lock-file / EY_POSTGRES_VERSION pin honoured exactly (raises
-#          rather than silently drifting a deliberate customer pin). An
-#          already-running instance (pg_running at converge time) is treated
-#          the same as an explicit pin -- a routine reconverge never silently
-#          swaps a live instance's installed patch version; only a genuinely
-#          fresh install (PostgreSQL not yet running) gets the fallback.
+#          rather than silently drifting a deliberate customer pin). A node
+#          where the postgresql package is already installed (checked via
+#          dpkg-query at converge time -- works for both DB and app-tier
+#          nodes) is treated the same as an explicit pin -- a routine
+#          reconverge never silently swaps an already-provisioned node's
+#          installed patch version; only a genuinely fresh install (package
+#          not yet installed) gets the fallback.
 #
 # The helper is loaded by extracting the module from the library file directly
 # to avoid requiring Chef infrastructure.
@@ -188,29 +190,34 @@ class VersionResolutionTest < Minitest::Test
   end
 
   # -------------------------------------------------------------------------
-  # Already-running instance reconverge: server_install.rb passes explicit_pin:
-  # true when pg_running returns true at converge time. This ensures that a
-  # routine Chef Apply against an already-running instance never silently swaps
-  # its installed PostgreSQL patch to a different version just because the default
-  # attribute pin has aged out of the apt archive. Only fresh installs (pg not
-  # yet running) get the fallback-to-newest-in-series behaviour.
+  # Already-provisioned instance reconverge: server_install.rb passes
+  # explicit_pin: true when the postgresql package is already installed on
+  # this node (checked via dpkg-query, which works on both DB-tier nodes with
+  # a running server and app-tier nodes with only the client package -- unlike
+  # pg_running, which only detects a locally running server and is always
+  # false on app-tier nodes). This ensures that a routine Chef Apply against
+  # an already-provisioned instance (DB or app role) never silently swaps its
+  # installed PostgreSQL package version just because the default attribute
+  # pin has aged out of the apt archive. Only fresh installs (package not yet
+  # installed on this node) get the fallback-to-newest-in-series behaviour.
   # -------------------------------------------------------------------------
 
-  def test_reconverge_running_instance_raises_not_falls_back
-    # Simulates: pg_running == true at converge, 16.4 pin has aged out.
-    # server_install.rb passes explicit_pin: true -> must raise, not silently
-    # install 16.15 as a side effect of an unrelated Apply.
+  def test_reconverge_already_installed_raises_not_falls_back
+    # Simulates: postgresql package already installed at converge (DB or app
+    # tier), 16.4 pin has aged out. server_install.rb passes explicit_pin:
+    # true -> must raise, not silently install 16.15 as a side effect of an
+    # unrelated Apply.
     known = %w[16.15 16.14 16.13 16.12 16.11 16.10]
     err = assert_raises(RuntimeError) do
       resolve_pg_package_version(known, "16.4", "16", explicit_pin: true)
     end
     assert_match(/explicitly pinned/, err.message,
-                 "should raise rather than silently swapping live instance's patch version")
+                 "should raise rather than silently swapping an already-installed node's patch version")
     assert_empty Chef::Log.warn_messages
   end
 
-  def test_reconverge_running_instance_exact_match_succeeds
-    # pg_running == true but 16.4 is still in the archive -- happy path.
+  def test_reconverge_already_installed_exact_match_succeeds
+    # Package already installed but 16.4 is still in the archive -- happy path.
     known = %w[16.15 16.14 16.4 16.3]
     result = resolve_pg_package_version(known, "16.4", "16", explicit_pin: true)
     assert_equal "16.4", result
