@@ -87,6 +87,30 @@ module PostgreSQL
       best
     end
 
+    # True if dpkg has any record of package_name being installed (dpkg
+    # states "ii" and "rc" both exit 0; "rc" -- removed but not purged --
+    # is a rare, fail-closed-only false positive, never a false negative).
+    # Split out from pg_already_installed? so it can be exercised directly
+    # against a real, always-present system package in tests, without
+    # requiring PostgreSQL itself to be installed.
+    def dpkg_package_installed?(package_name)
+      system("dpkg-query -W #{package_name} >/dev/null 2>&1")
+    end
+
+    # Returns true if the postgresql-{short_version} package is already
+    # installed on this node according to dpkg. Works on both DB-tier nodes
+    # (which run a full server) and app-tier nodes (which also receive the
+    # full postgresql-{version} server package unconditionally from
+    # install.sh.erb). Unlike pg_running (which shells out to psql -h
+    # localhost and is structurally always false on app-tier nodes, which
+    # never expose a local Postgres socket), this check is role-agnostic.
+    #
+    # Returns false on a genuinely fresh node (package not yet installed),
+    # which is the only case where fallback-to-newest-in-series is safe.
+    def pg_already_installed?(short_version)
+      dpkg_package_installed?("postgresql-#{short_version}")
+    end
+
     def lock_db_version
       node.engineyard.environment.lock_db_version? ? node.engineyard.environment.components.find_all { |e| e["key"] == "lock_db_version" }.first["value"] : false
     end

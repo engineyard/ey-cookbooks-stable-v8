@@ -80,22 +80,25 @@ ruby_block "check lock version" do
     # installed on this node" the same as an explicit pin: exact-match-or-
     # raise, never an automatic version change.
     #
-    # Use `dpkg-query` rather than `pg_running` (which shells out to `psql -h
+    # Use pg_already_installed? (dpkg-query on the postgresql-{version}
+    # server package) rather than `pg_running` (which shells out to `psql -h
     # localhost`) because:
-    #   - pg_running only detects a locally-running server, so it is always
-    #     false on app-tier nodes even after the postgresql-client package is
-    #     already installed and previously converged there.
-    #   - dpkg-query checks the installed package directly, so it is role-
-    #     agnostic: it returns true on both DB nodes (with a server) and app
-    #     nodes (with the client only), and on a truly fresh install it is
-    #     always false (package not yet present).
+    #   - pg_running only detects a locally-listening server, so it is always
+    #     false on app-tier nodes even after they've already converged --
+    #     install.sh.erb installs the full postgresql-{version} server
+    #     package (not just the client) unconditionally on BOTH the DB and
+    #     app tiers, so dpkg-query on that same package name is a valid
+    #     already-provisioned signal for either tier.
+    #   - dpkg-query checks the installed package directly and needs no
+    #     PostgreSQL binary or socket to exist yet, so on a truly fresh node
+    #     it is always false (package not yet present) with no risk of
+    #     erroring before a client is installed.
     #
     # Fallback-to-newest is reserved for what AC3 actually targets -- a
     # genuinely fresh instance (no PostgreSQL packages installed yet) that
     # would otherwise fail to provision at all because the hardcoded attribute
     # pin has moved out of the distro's apt window.
-    pg_installed = system("dpkg-query -W postgresql-#{postgres_version} >/dev/null 2>&1")
-    explicit_pin = lock_version_present || !fetch_env_var(node, "EY_POSTGRES_VERSION").nil? || pg_installed
+    explicit_pin = lock_version_present || !fetch_env_var(node, "EY_POSTGRES_VERSION").nil? || pg_already_installed?(postgres_version)
     package_version = resolve_pg_package_version(known_versions, install_version, postgres_version, explicit_pin: explicit_pin)
     run_context.resource_collection.find(template: "/tmp/src/postgresql/install.sh").variables package_version: package_version, postgres_version: postgres_version
   end

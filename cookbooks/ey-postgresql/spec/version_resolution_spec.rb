@@ -16,11 +16,15 @@
 #          Explicit lock-file / EY_POSTGRES_VERSION pin honoured exactly (raises
 #          rather than silently drifting a deliberate customer pin). A node
 #          where the postgresql package is already installed (checked via
-#          dpkg-query at converge time -- works for both DB and app-tier
-#          nodes) is treated the same as an explicit pin -- a routine
-#          reconverge never silently swaps an already-provisioned node's
-#          installed patch version; only a genuinely fresh install (package
-#          not yet installed) gets the fallback.
+#          pg_already_installed?/dpkg_package_installed? at converge time --
+#          works for both DB and app-tier nodes, both of which get the full
+#          postgresql-{version} server package from install.sh.erb) is
+#          treated the same as an explicit pin -- a routine reconverge never
+#          silently swaps an already-provisioned node's installed patch
+#          version; only a genuinely fresh install (package not yet
+#          installed) gets the fallback. Also covers dpkg_package_installed?
+#          itself against a real dpkg-query subprocess call, not just the
+#          pure resolution logic.
 #
 # The helper is loaded by extracting the module from the library file directly
 # to avoid requiring Chef infrastructure.
@@ -222,6 +226,38 @@ class VersionResolutionTest < Minitest::Test
     result = resolve_pg_package_version(known, "16.4", "16", explicit_pin: true)
     assert_equal "16.4", result
     assert_empty Chef::Log.warn_messages
+  end
+
+  # -------------------------------------------------------------------------
+  # dpkg_package_installed? / pg_already_installed? -- exercises the REAL
+  # `system("dpkg-query -W ...")` call server_install.rb's ruby_block relies
+  # on to compute explicit_pin, rather than only the pure resolution logic
+  # above. Requires dpkg-query on PATH (present in the CI/Docker image; the
+  # test is skipped, not failed, if it's unavailable e.g. on a non-Debian
+  # host running these tests locally).
+  # -------------------------------------------------------------------------
+
+  def test_dpkg_package_installed_true_for_a_real_installed_package
+    skip "dpkg-query not on PATH (non-Debian host)" unless system("which dpkg-query >/dev/null 2>&1")
+    # bash is present in every Debian/Ubuntu base image used by this cookbook's
+    # CI/Docker harness -- a stable, always-installed proxy for "postgresql-N
+    # is installed" without requiring PostgreSQL itself.
+    assert dpkg_package_installed?("bash"),
+           "dpkg-query should report an actually-installed package as installed"
+  end
+
+  def test_dpkg_package_installed_false_for_a_nonexistent_package
+    skip "dpkg-query not on PATH (non-Debian host)" unless system("which dpkg-query >/dev/null 2>&1")
+    refute dpkg_package_installed?("definitely-not-a-real-package-xyz-189"),
+           "dpkg-query should report a nonexistent/uninstalled package as not installed"
+  end
+
+  def test_pg_already_installed_delegates_to_dpkg_check
+    skip "dpkg-query not on PATH (non-Debian host)" unless system("which dpkg-query >/dev/null 2>&1")
+    # On this bare test image, postgresql-16 is never installed -- proves the
+    # genuinely-fresh-node case (the one AC3's fallback targets) reads false.
+    refute pg_already_installed?("16"),
+           "a node with no postgresql-16 package installed should read as not-already-installed"
   end
 
   # -------------------------------------------------------------------------
