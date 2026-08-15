@@ -254,10 +254,16 @@ class VersionResolutionTest < Minitest::Test
 
   def test_pg_already_installed_delegates_to_dpkg_check
     skip "dpkg-query not on PATH (non-Debian host)" unless system("which dpkg-query >/dev/null 2>&1")
-    # On this bare test image, postgresql-16 is never installed -- proves the
-    # genuinely-fresh-node case (the one AC3's fallback targets) reads false.
-    refute pg_already_installed?("16"),
-           "a node with no postgresql-16 package installed should read as not-already-installed"
+    # Use a short_version that can never correspond to a real postgresql-N
+    # package (GitHub-hosted ubuntu-latest runners ship several real
+    # postgresql-NN packages preinstalled, so we can't assume "16" reads
+    # false there the way it does on a bare Docker image). This still proves
+    # pg_already_installed? correctly reads "not installed" -> false for the
+    # genuinely-fresh-node case (the one AC3's fallback targets), just via a
+    # package name guaranteed not to exist on any host instead of assuming
+    # postgresql-16's install state.
+    refute pg_already_installed?("999"),
+           "a node with no postgresql-999 package installed should read as not-already-installed"
   end
 
   # -------------------------------------------------------------------------
