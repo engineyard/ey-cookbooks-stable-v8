@@ -1,9 +1,30 @@
 #!/bin/bash
 
+# Resolve the full apt version string (e.g. "16.4-1.pgdg24.04+1") for a package
+# whose upstream version is EXACTLY $package_version (e.g. "16.4").
+#
+# apt-cache madison prints one row per published version, "pkg | <version> | src".
+# We compare $package_version against the upstream part of each row's version --
+# everything before the first "-", with any "epoch:" prefix stripped -- and take
+# the first (newest) exact match, printing that row's full version verbatim so
+# apt installs precisely it.
+#
+# The comparison is deliberately exact, not a prefix glob. The previous
+# implementation matched "${package_version}*", so a request for "16.4" would
+# also match "16.40" and silently install the wrong patch -- the same class of
+# bug this recipe's Chef-side resolution was fixed to avoid, one layer down.
 get_full_pkg_version() {
   postgres_package="$1"
   package_version="$2"
-  echo "$(apt-cache show ${postgres_package}=${package_version}* | grep 'Version:' | awk '{print $2}' 2>/dev/null)"
+  apt-cache madison "${postgres_package}" 2>/dev/null | awk -F'|' -v want="${package_version}" '
+    {
+      full = $2
+      gsub(/^[ \t]+|[ \t]+$/, "", full)   # trim surrounding whitespace
+      upstream = full
+      sub(/^[0-9]+:/, "", upstream)        # strip a dpkg epoch prefix, if any
+      sub(/-.*$/, "", upstream)            # strip the debian revision
+      if (upstream == want) { print full; exit }
+    }'
 }
 
 <% packages = ["postgresql-client-#{@postgres_version}", "postgresql-#{@postgres_version}", "postgresql-server-dev-#{@postgres_version}"] %>
