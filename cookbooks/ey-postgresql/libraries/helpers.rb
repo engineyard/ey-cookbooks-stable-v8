@@ -155,14 +155,21 @@ module PostgreSQL
     # if the package is not installed, or if dpkg reports a version that does
     # not start with a dotted numeric version (nothing to pin to).
     #
-    # dpkg-query exits 0 for the "rc" state (removed but config files remain),
-    # where Version is still populated but no server is installed. Filter on
-    # the install state so a purged-but-not-cleaned node is treated as fresh.
+    # Two dpkg version details this has to survive, because a version parsed
+    # wrong becomes a pin that can never match:
+    #   - An epoch prefix ("1:2.39.3-9") is dpkg-internal ordering metadata and
+    #     is not part of the upstream version, so strip it. PostgreSQL's
+    #     packages carry no epoch today, but reading one as the version would
+    #     silently pin to the epoch number.
+    #   - dpkg-query exits 0 for the "rc" state (removed but config files
+    #     remain), where Version is still populated even though no server is
+    #     installed -- so filter on the install state rather than the exit
+    #     status, and treat a removed-but-not-purged instance as fresh.
     def dpkg_package_version(package_name)
       out = `dpkg-query -W -f='${db:Status-Status} ${Version}' #{package_name} 2>/dev/null`.strip
       status, version = out.split(" ", 2)
       return nil unless status == "installed" && version
-      version[/\A[0-9]+(\.[0-9]+)*/]
+      version.sub(/\A[0-9]+:/, "")[/\A[0-9]+(\.[0-9]+)*/]
     end
 
     # The PostgreSQL patch version currently installed on this node, e.g.

@@ -515,6 +515,63 @@ class VersionResolutionTest < Minitest::Test
                "a node with no postgresql-999 installed has no version to pin to"
   end
 
+  # The parsing itself, against the exact strings dpkg emits. The tests above
+  # can only assert the shape of whatever version the test image happens to
+  # ship, so they cannot show that a real PostgreSQL package version parses
+  # correctly -- and a version parsed wrong becomes a pin that never matches.
+  #
+  # dpkg-query is stubbed here (and only here) so specific outputs can be
+  # driven through the real parser.
+  def with_dpkg_output(output)
+    singleton = (class << self; self; end)
+    singleton.send(:define_method, :`) { |_cmd| output }
+    yield
+  ensure
+    singleton.send(:remove_method, :`)
+  end
+
+  def test_dpkg_version_parsing_of_a_real_postgresql_package_version
+    # As reported on an instance running the PostgreSQL 11 series.
+    with_dpkg_output("installed 11.22-10.pgdg24.04+1") do
+      assert_equal "11.22", dpkg_package_version("postgresql-11")
+    end
+  end
+
+  def test_dpkg_version_parsing_strips_an_epoch_prefix
+    # An epoch is dpkg-internal ordering metadata, not part of the upstream
+    # version. Reading it as the version would pin to "1".
+    with_dpkg_output("installed 1:16.4-1.pgdg24.04+1") do
+      assert_equal "16.4", dpkg_package_version("postgresql-16")
+    end
+  end
+
+  def test_dpkg_version_parsing_keeps_three_component_versions
+    # The 9.x series carries a third component, which must survive intact.
+    with_dpkg_output("installed 9.5.25-1.pgdg20.04+1") do
+      assert_equal "9.5.25", dpkg_package_version("postgresql-9.5")
+    end
+  end
+
+  def test_dpkg_version_parsing_treats_removed_but_not_purged_as_fresh
+    # dpkg-query exits 0 and still reports a Version for a package removed
+    # without purging, but no server is installed -- so there is nothing to
+    # pin to, and the instance must be treated as fresh.
+    with_dpkg_output("config-files 11.22-10.pgdg24.04+1") do
+      assert_nil dpkg_package_version("postgresql-11")
+    end
+  end
+
+  def test_dpkg_version_parsing_of_empty_output
+    with_dpkg_output("") { assert_nil dpkg_package_version("postgresql-11") }
+  end
+
+  def test_dpkg_version_parsing_of_a_non_numeric_version
+    # Nothing to pin to, so nil rather than a wrong guess.
+    with_dpkg_output("installed weird-version") do
+      assert_nil dpkg_package_version("postgresql-11")
+    end
+  end
+
   # -------------------------------------------------------------------------
   # Deduplication: apt-cache madison lists the same version once per
   # suite/component it is published in, so the raw list is heavily duplicated
