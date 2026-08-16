@@ -81,6 +81,9 @@ include PostgreSQL::Helper
 # ---------------------------------------------------------------------------
 class FakeNode
   attr_accessor :installed_version
+  # When set, installed_pg_version is left alone so it runs the real parser
+  # over stubbed dpkg output, instead of being answered from installed_version.
+  attr_accessor :read_installed_version_from_dpkg
   attr_reader :lock_file_version, :env_var_version
 
   LOCK_FILE = "/db/.lock_db_version"
@@ -127,6 +130,7 @@ module PostgreSQL
 
     def installed_pg_version(short_version)
       return installed_pg_version_without_fake(short_version) unless $fake_node
+      return installed_pg_version_without_fake(short_version) if $fake_node.read_installed_version_from_dpkg
       $fake_node.installed_version
     end
   end
@@ -559,6 +563,54 @@ class VersionResolutionTest < Minitest::Test
     with_dpkg_output("config-files 11.22-10.pgdg24.04+1") do
       assert_nil dpkg_package_version("postgresql-11")
     end
+  end
+
+  def test_dpkg_version_parsing_treats_not_installed_as_fresh
+    with_dpkg_output("not-installed ") { assert_nil dpkg_package_version("postgresql-11") }
+  end
+
+  # An interrupted converge (killed run, reboot mid-install, disk full during
+  # configure) leaves the package unpacked: its files, including a working
+  # server binary, are on disk and dpkg reports its version, but the postinst
+  # has not run. The instance is provisioned, so it must pin to that version.
+  #
+  # Reading these states as "fresh" is the dangerous direction: it hands the
+  # instance to the newest-in-series fallback, which changes the version of a
+  # database that is already installed -- silently, because the install script
+  # allows downgrades. Being wrong the other way can only raise.
+  def test_dpkg_version_parsing_treats_unpacked_as_installed
+    with_dpkg_output("unpacked 11.22-10.pgdg24.04+1") do
+      assert_equal "11.22", dpkg_package_version("postgresql-11"),
+                   "an unpacked package is on disk and must pin, not fall back"
+    end
+  end
+
+  def test_dpkg_version_parsing_treats_interrupted_states_as_installed
+    %w[half-configured half-installed triggers-pending triggers-awaited].each do |state|
+      with_dpkg_output("#{state} 11.22-10.pgdg24.04+1") do
+        assert_equal "11.22", dpkg_package_version("postgresql-11"),
+                     "#{state} means the package is on disk and must pin, not fall back"
+      end
+    end
+  end
+
+  # The whole point of the states above: an instance left unpacked by an
+  # interrupted converge must not have its version swapped by the next one.
+  # Runs the pin resolution end to end, from raw dpkg output through the
+  # parser to the pin -- the layer FakeNode's installed_version bypasses.
+  def test_interrupted_converge_does_not_swap_the_installed_version
+    node = FakeNode.new(latest_version: "11.16")
+    install_version = explicit_pin = nil
+    # $fake_node answers the lock file and env var; the dpkg call is stubbed
+    # separately so installed_pg_version parses real dpkg output.
+    $fake_node = node
+    node.read_installed_version_from_dpkg = true
+    with_dpkg_output("unpacked 11.17-1.pgdg24.04+1") do
+      install_version, explicit_pin, = resolve_pg_version_pin(node, "11")
+    end
+    assert_equal "11.17", install_version,
+                 "must pin to the version dpkg reports for the unpacked package"
+    assert explicit_pin, "an unpacked install is still an install -- it must pin"
   end
 
   def test_dpkg_version_parsing_of_empty_output

@@ -155,20 +155,35 @@ module PostgreSQL
     # if the package is not installed, or if dpkg reports a version that does
     # not start with a dotted numeric version (nothing to pin to).
     #
-    # Two dpkg version details this has to survive, because a version parsed
-    # wrong becomes a pin that can never match:
+    # Two dpkg details this has to survive, because both decide whether an
+    # instance is treated as already-provisioned or as fresh:
     #   - An epoch prefix ("1:2.39.3-9") is dpkg-internal ordering metadata and
     #     is not part of the upstream version, so strip it. PostgreSQL's
     #     packages carry no epoch today, but reading one as the version would
-    #     silently pin to the epoch number.
-    #   - dpkg-query exits 0 for the "rc" state (removed but config files
-    #     remain), where Version is still populated even though no server is
-    #     installed -- so filter on the install state rather than the exit
-    #     status, and treat a removed-but-not-purged instance as fresh.
+    #     silently pin to the epoch number -- a pin that can never match.
+    #   - dpkg-query exits 0 for states where no package is on disk, so filter
+    #     on the install state rather than the exit status. Only two states
+    #     mean "nothing installed": "not-installed", and "config-files" (the
+    #     package was removed without being purged, so only its conffiles
+    #     remain). Every other state -- "installed", but also "unpacked" and
+    #     the half-configured/triggers states an interrupted converge leaves
+    #     behind -- means the package files ARE on disk and the version dpkg
+    #     reports is the one this instance is running.
+    #
+    # That distinction has to be exact, because the two ways of being wrong are
+    # not equally bad. Reading a present package as absent makes the caller
+    # treat a provisioned instance as fresh, which lets the newest-in-series
+    # fallback swap a running database's patch version -- silently, since the
+    # install script allows downgrades. Reading an absent package as present
+    # can at worst raise, which is loud and recoverable. So when a state is
+    # ambiguous, treat the package as present.
+    PACKAGE_ABSENT_STATES = %w[not-installed config-files].freeze
+
     def dpkg_package_version(package_name)
       out = `dpkg-query -W -f='${db:Status-Status} ${Version}' #{package_name} 2>/dev/null`.strip
       status, version = out.split(" ", 2)
-      return nil unless status == "installed" && version
+      return nil if status.nil? || version.nil?
+      return nil if PACKAGE_ABSENT_STATES.include?(status)
       version.sub(/\A[0-9]+:/, "")[/\A[0-9]+(\.[0-9]+)*/]
     end
 
