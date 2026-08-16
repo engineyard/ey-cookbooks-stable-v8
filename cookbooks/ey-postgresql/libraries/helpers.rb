@@ -126,30 +126,6 @@ module PostgreSQL
       end
     end
 
-    # True if dpkg has any record of package_name being installed (dpkg
-    # states "ii" and "rc" both exit 0; "rc" -- removed but not purged --
-    # is a rare, fail-closed-only false positive, never a false negative).
-    # Split out from pg_already_installed? so it can be exercised directly
-    # against a real, always-present system package in tests, without
-    # requiring PostgreSQL itself to be installed.
-    def dpkg_package_installed?(package_name)
-      system("dpkg-query -W #{package_name} >/dev/null 2>&1")
-    end
-
-    # Returns true if the postgresql-{short_version} package is already
-    # installed on this node according to dpkg. Works on both DB-tier nodes
-    # (which run a full server) and app-tier nodes (which also receive the
-    # full postgresql-{version} server package unconditionally from
-    # install.sh.erb). Unlike pg_running (which shells out to psql -h
-    # localhost and is structurally always false on app-tier nodes, which
-    # never expose a local Postgres socket), this check is role-agnostic.
-    #
-    # Returns false on a genuinely fresh node (package not yet installed),
-    # which is the only case where fallback-to-newest-in-series is safe.
-    def pg_already_installed?(short_version)
-      dpkg_package_installed?("postgresql-#{short_version}")
-    end
-
     # The upstream version of an installed package as dpkg reports it, with the
     # debian revision stripped: "11.22-10.pgdg24.04+1" -> "11.22". Returns nil
     # if the package is not installed, or if dpkg reports a version that does
@@ -188,10 +164,15 @@ module PostgreSQL
     end
 
     # The PostgreSQL patch version currently installed on this node, e.g.
-    # "11.22", or nil on a genuinely fresh node. Reads the same
-    # postgresql-{short_version} server package that pg_already_installed?
-    # checks -- install.sh.erb installs it unconditionally on both the DB and
-    # app tiers, so this is a valid already-provisioned signal for either.
+    # "11.22", or nil on a genuinely fresh node -- which is the only case
+    # where falling back to the newest patch in the series is safe.
+    #
+    # Reads the postgresql-{short_version} server package, which install.sh.erb
+    # installs unconditionally on both the DB and app tiers, so this is a valid
+    # already-provisioned signal for either. Unlike pg_running (which shells out
+    # to psql -h localhost and is structurally always false on app-tier nodes,
+    # which never expose a local Postgres socket), it is role-agnostic, and it
+    # needs no PostgreSQL binary or socket to exist yet.
     def installed_pg_version(short_version)
       dpkg_package_version("postgresql-#{short_version}")
     end

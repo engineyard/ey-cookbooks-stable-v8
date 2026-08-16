@@ -14,22 +14,20 @@
 #          must resolve via component-wise Gem::Version comparison, not string prefix.
 #   - Fallback to newest-in-series when pinned patch is absent.
 #          Explicit lock-file / EY_POSTGRES_VERSION pin honoured exactly (raises
-#          rather than silently drifting a deliberate customer pin). A node
-#          where the postgresql package is already installed (checked via
-#          pg_already_installed?/dpkg_package_installed? at converge time --
-#          works for both DB and app-tier nodes, both of which get the full
-#          postgresql-{version} server package from install.sh.erb) is
-#          treated the same as an explicit pin -- a routine reconverge never
-#          silently swaps an already-provisioned node's installed patch
-#          version; only a genuinely fresh install (package not yet
-#          installed) gets the fallback. Also covers dpkg_package_installed?
-#          itself against a real dpkg-query subprocess call, not just the
-#          pure resolution logic.
+#          rather than silently drifting a deliberate customer pin). An
+#          instance where the postgresql package is already installed is
+#          treated the same -- a routine reconverge never silently swaps an
+#          already-provisioned instance's installed patch version; only a
+#          genuinely fresh install gets the fallback.
 #   - Pin selection (resolve_pg_version_pin) and, above all, REPEAT CONVERGES:
 #          an instance provisioned via the fallback must keep converging. The
-#          pin for an already-installed node is the version dpkg actually
+#          pin for an already-installed instance is the version dpkg actually
 #          reports, not the default attribute the fallback did not use, so
 #          the exact match succeeds on every converge after the first.
+#   - Reading that version out of dpkg (dpkg_package_version), against the
+#          real strings dpkg emits -- including the states an interrupted
+#          converge leaves behind, where misreading a present package as
+#          absent would let the fallback swap a running database's version.
 #
 # The helper is loaded by extracting the module from the library file directly
 # to avoid requiring Chef infrastructure.
@@ -333,44 +331,6 @@ class VersionResolutionTest < Minitest::Test
   end
 
   # -------------------------------------------------------------------------
-  # dpkg_package_installed? / pg_already_installed? -- exercises the REAL
-  # `system("dpkg-query -W ...")` call server_install.rb's ruby_block relies
-  # on to compute explicit_pin, rather than only the pure resolution logic
-  # above. Requires dpkg-query on PATH (present in the CI/Docker image; the
-  # test is skipped, not failed, if it's unavailable e.g. on a non-Debian
-  # host running these tests locally).
-  # -------------------------------------------------------------------------
-
-  def test_dpkg_package_installed_true_for_a_real_installed_package
-    skip "dpkg-query not on PATH (non-Debian host)" unless system("which dpkg-query >/dev/null 2>&1")
-    # bash is present in every Debian/Ubuntu base image used by this cookbook's
-    # CI/Docker harness -- a stable, always-installed proxy for "postgresql-N
-    # is installed" without requiring PostgreSQL itself.
-    assert dpkg_package_installed?("bash"),
-           "dpkg-query should report an actually-installed package as installed"
-  end
-
-  def test_dpkg_package_installed_false_for_a_nonexistent_package
-    skip "dpkg-query not on PATH (non-Debian host)" unless system("which dpkg-query >/dev/null 2>&1")
-    refute dpkg_package_installed?("definitely-not-a-real-package-xyz-189"),
-           "dpkg-query should report a nonexistent/uninstalled package as not installed"
-  end
-
-  def test_pg_already_installed_delegates_to_dpkg_check
-    skip "dpkg-query not on PATH (non-Debian host)" unless system("which dpkg-query >/dev/null 2>&1")
-    # Use a short_version that can never correspond to a real postgresql-N
-    # package (GitHub-hosted ubuntu-latest runners ship several real
-    # postgresql-NN packages preinstalled, so we can't assume "16" reads
-    # false there the way it does on a bare Docker image). This still proves
-    # pg_already_installed? correctly reads "not installed" -> false for the
-    # genuinely-fresh-node case (the one the fallback targets), just via a
-    # package name guaranteed not to exist on any host instead of assuming
-    # postgresql-16's install state.
-    refute pg_already_installed?("999"),
-           "a node with no postgresql-999 package installed should read as not-already-installed"
-  end
-
-  # -------------------------------------------------------------------------
   # REPEAT CONVERGES.
   #
   # server_install.rb runs on every converge, including the environment-wide
@@ -513,10 +473,12 @@ class VersionResolutionTest < Minitest::Test
 
   def test_installed_pg_version_nil_on_a_fresh_node
     skip "dpkg-query not on PATH (non-Debian host)" unless system("which dpkg-query >/dev/null 2>&1")
-    # As in the pg_already_installed? test above, use a series number that can
-    # never correspond to a real package so the result is host-independent.
+    # Use a series number that can never correspond to a real postgresql-N
+    # package, so the result is host-independent: CI runners ship several real
+    # postgresql-NN packages preinstalled, so a plausible series like "16"
+    # cannot be assumed absent the way it is on a bare Docker image.
     assert_nil installed_pg_version("999"),
-               "a node with no postgresql-999 installed has no version to pin to"
+               "an instance with no postgresql-999 installed has no version to pin to"
   end
 
   # The parsing itself, against the exact strings dpkg emits. The tests above
