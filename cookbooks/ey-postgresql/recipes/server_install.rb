@@ -11,17 +11,20 @@ end
 apt_update
 
 postgres_version = node["postgresql"]["short_version"]
-install_version = node["postgresql"]["latest_version"]
 known_versions = []
 `apt-cache madison postgresql-server-dev-#{postgres_version} |awk '{print $3'}`.split(/\n+/).each { |v| known_versions.append(v.split("-")[0]) }
-# EY_POSTGRES_VERSION is an explicit customer pin (attributes/version.rb folds it
-# into node["postgresql"]["latest_version"] before this recipe runs, so we detect
-# it directly from the env var rather than from latest_version itself). Any other
-# case is the default per-stack attribute pin, which falls back to the newest
-# patch in the series instead of raising. The lock_version_file pin (also
-# explicit) is only known at converge time -- see the "check lock version" block.
-explicit_env_pin = !fetch_env_var(node, "EY_POSTGRES_VERSION").nil?
-package_version = resolve_pg_package_version(known_versions, install_version, postgres_version, explicit_pin: explicit_env_pin)
+# madison lists one row per suite/component the same version is published in, so
+# a single available patch appears many times. Dedupe: the duplicates carry no
+# information and make the version list in any error message read as corrupted.
+known_versions.uniq!
+# Compile-phase resolution, used only as the template's default value -- the
+# "check lock version" ruby_block below re-resolves at converge time and
+# overwrites it. Both calls go through resolve_pg_version_pin so they apply the
+# same precedence (lock file, then EY_POSTGRES_VERSION, then the version already
+# installed on this node, then the unpinned default attribute).
+install_version, explicit_pin, pin_source = resolve_pg_version_pin(node, postgres_version)
+package_version = resolve_pg_package_version(known_versions, install_version, postgres_version,
+                                             explicit_pin: explicit_pin, pin_source: pin_source)
 
 execute "dropping lock version file" do
   command "echo #{running_pg_version} > #{node['lock_version_file']}"
@@ -58,48 +61,25 @@ end
 # on template "/tmp/src/postgresql/install.sh"
 ruby_block "check lock version" do
   block do
-    lock_version_present = File.exist?(node["lock_version_file"])
-    install_version = if lock_version_present
-                        `cat #{node["lock_version_file"]}`.strip
-                      else
-                        node["postgresql"]["latest_version"]
-                      end
-    # lock_version_file and EY_POSTGRES_VERSION are both explicit, deliberate
-    # customer pins -- require an exact match and raise if it's gone rather
-    # than silently drifting it. Otherwise this is the default per-stack
-    # attribute pin, which falls back to the newest patch in the series.
-    # See libraries/helpers.rb#resolve_pg_package_version.
+    # Resolve again at converge time. The lock version file may have been
+    # created earlier in this same run (see the "dropping lock version file"
+    # execute above), and on instances booted from a snapshot it is not
+    # present during the compile phase at all -- so the compile-phase result
+    # can be stale by the time the install script actually runs.
     #
-    # This recipe runs on every Chef converge for db/app roles, not only on
-    # first boot, so the fallback path could otherwise fire on a routine
-    # reconverge of an already-provisioned instance whose default attribute
-    # pin has aged out of the apt archive -- silently swapping its installed
-    # PostgreSQL package version (and possibly restarting the service) as a
-    # side effect of an unrelated Apply. That's worse than the old fail-
-    # closed behavior for a live environment, so treat "PostgreSQL is already
-    # installed on this node" the same as an explicit pin: exact-match-or-
-    # raise, never an automatic version change.
-    #
-    # Use pg_already_installed? (dpkg-query on the postgresql-{version}
-    # server package) rather than `pg_running` (which shells out to `psql -h
-    # localhost`) because:
-    #   - pg_running only detects a locally-listening server, so it is always
-    #     false on app-tier nodes even after they've already converged --
-    #     install.sh.erb installs the full postgresql-{version} server
-    #     package (not just the client) unconditionally on BOTH the DB and
-    #     app tiers, so dpkg-query on that same package name is a valid
-    #     already-provisioned signal for either tier.
-    #   - dpkg-query checks the installed package directly and needs no
-    #     PostgreSQL binary or socket to exist yet, so on a truly fresh node
-    #     it is always false (package not yet present) with no risk of
-    #     erroring before a client is installed.
-    #
-    # Fallback-to-newest is reserved for what AC3 actually targets -- a
-    # genuinely fresh instance (no PostgreSQL packages installed yet) that
-    # would otherwise fail to provision at all because the hardcoded attribute
-    # pin has moved out of the distro's apt window.
-    explicit_pin = lock_version_present || !fetch_env_var(node, "EY_POSTGRES_VERSION").nil? || pg_already_installed?(postgres_version)
-    package_version = resolve_pg_package_version(known_versions, install_version, postgres_version, explicit_pin: explicit_pin)
+    # resolve_pg_version_pin decides both the version and whether it is a pin
+    # that must match exactly. The case that matters here is a node where
+    # PostgreSQL is already installed: it pins to the version dpkg reports,
+    # so an already-provisioned instance can never have its running database's
+    # patch version swapped as a side effect of an unrelated converge -- and,
+    # because the pin is the installed version rather than a fixed attribute,
+    # the exact match always succeeds and the converge proceeds. Only a
+    # genuinely fresh instance falls back to newest-in-series, which is the
+    # case that would otherwise fail to provision at all once the attribute's
+    # patch version ages out of the distro's apt window.
+    install_version, explicit_pin, pin_source = resolve_pg_version_pin(node, postgres_version)
+    package_version = resolve_pg_package_version(known_versions, install_version, postgres_version,
+                                                 explicit_pin: explicit_pin, pin_source: pin_source)
     run_context.resource_collection.find(template: "/tmp/src/postgresql/install.sh").variables package_version: package_version, postgres_version: postgres_version
   end
 end
