@@ -21,6 +21,28 @@ original defect.
 |------|-------------|--------|
 | `pg_extension_integration_test.rb` | **Yes** (live PostgreSQL) | All four fixes, asserted against real database state |
 | `pg_extension_regression.sh` | No (chef-solo only) | Fast `NameError` gate for `pg_extension` (String + Array) and `createdb` |
+| `version_resolution_spec.rb` | No (pure Ruby) | Which PostgreSQL patch version a converge resolves to, and why |
+| `install_script_spec.rb` | No (bash + recorded apt output) | That the install script asks apt for the exact version Chef resolved |
+
+## Version resolution, in two layers
+
+Picking the right patch version takes both layers agreeing, so each has its own
+suite:
+
+- `version_resolution_spec.rb` covers the **Chef** layer — the pin precedence
+  (lock file, `EY_POSTGRES_VERSION`, the version already installed, the default
+  attribute), the newest-in-series fallback, repeat-converge stability, and the
+  parsing of dpkg's own output.
+- `install_script_spec.rb` covers the **shell** layer — the rendered
+  `install.sh` must ask apt for exactly the version Chef resolved. It renders
+  the ERB template as Chef does and runs it as real bash with a fake
+  `apt-cache`/`apt` on PATH, replaying recorded `apt-cache madison` output, and
+  asserts on the version string apt was actually handed.
+
+  This layer needs its own coverage because an exact resolution in Chef is
+  worthless if the script then matches it loosely: the script decides what apt
+  installs. The defect it guards is a prefix match on the version, under which a
+  request for `17.1` installs `17.11`.
 
 Both run in CI on every PR touching `cookbooks/ey-postgresql/**` — see
 `.github/workflows/ey-postgresql-tests.yml` (PostgreSQL 16 service container,
@@ -61,6 +83,10 @@ PGHOST=localhost PGPORT=5432 PGUSER=postgres PGPASSWORD=postgres \
 
 # Fast no-DB gate:
 bundle exec ./pg_extension_regression.sh   # exit 0 = pass, 1 = regression
+
+# Version resolution (pure Ruby, no DB, no network):
+bundle exec ruby version_resolution_spec.rb
+bundle exec ruby install_script_spec.rb
 ```
 
 Each test is self-checking: reverting any one of the four fixes turns the

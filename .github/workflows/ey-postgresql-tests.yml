@@ -10,6 +10,10 @@ name: ey-postgresql tests
 #   to newest-in-series rather than raising when a pinned patch is absent from
 #   the apt repo. Pure-Ruby unit tests (version_resolution_spec.rb), no Chef or
 #   DB required.
+# - The install script's own version matching (install_script_spec.rb): the
+#   rendered install.sh must ask apt for the EXACT version Chef resolved, not a
+#   prefix match that would let "17.1" install "17.11". Runs the real script as
+#   bash against recorded apt-cache madison output; no apt or network required.
 
 on:
   pull_request:
@@ -88,3 +92,7 @@ jobs:
       - name: Version resolution unit tests
         working-directory: cookbooks/ey-postgresql/spec
         run: bundle exec ruby version_resolution_spec.rb
+
+      - name: Install script tests
+        working-directory: cookbooks/ey-postgresql/spec
+        run: bundle exec ruby install_script_spec.rb

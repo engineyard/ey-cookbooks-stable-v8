@@ -33,9 +33,9 @@ known_versions.uniq!
 # the one the install script actually uses -- raise if the pin is still
 # genuinely unresolvable by then.
 package_version = begin
-  install_version, explicit_pin, pin_source = resolve_pg_version_pin(node, postgres_version)
+  install_version, pin, pin_source = resolve_pg_version_pin(node, postgres_version)
   resolve_pg_package_version(known_versions, install_version, postgres_version,
-                             explicit_pin: explicit_pin, pin_source: pin_source)
+                             pin: pin, pin_source: pin_source)
 rescue RuntimeError => e
   Chef::Log.info("ey-postgresql: deferring version resolution to converge time (#{e.message})")
   node["postgresql"]["latest_version"]
@@ -92,9 +92,12 @@ ruby_block "check lock version" do
     # genuinely fresh instance falls back to newest-in-series, which is the
     # case that would otherwise fail to provision at all once the attribute's
     # patch version ages out of the distro's apt window.
-    install_version, explicit_pin, pin_source = resolve_pg_version_pin(node, postgres_version)
+    install_version, pin, pin_source = resolve_pg_version_pin(node, postgres_version)
     package_version = resolve_pg_package_version(known_versions, install_version, postgres_version,
-                                                 explicit_pin: explicit_pin, pin_source: pin_source)
+                                                 pin: pin, pin_source: pin_source)
+    # resolve_pg_package_version logs which version this converge resolved to and
+    # why -- info on the exact-match path, warn when it had to move -- so every
+    # outcome is on the record in the converge log.
     run_context.resource_collection.find(template: "/tmp/src/postgresql/install.sh").variables package_version: package_version, postgres_version: postgres_version
   end
 end
