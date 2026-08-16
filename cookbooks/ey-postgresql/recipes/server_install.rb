@@ -22,9 +22,24 @@ known_versions.uniq!
 # overwrites it. Both calls go through resolve_pg_version_pin so they apply the
 # same precedence (lock file, then EY_POSTGRES_VERSION, then the version already
 # installed on this node, then the unpinned default attribute).
-install_version, explicit_pin, pin_source = resolve_pg_version_pin(node, postgres_version)
-package_version = resolve_pg_package_version(known_versions, install_version, postgres_version,
-                                             explicit_pin: explicit_pin, pin_source: pin_source)
+#
+# This one must never raise, because it runs before the resources below have
+# had their chance to run. A stale lock version file left behind after
+# lock_db_version was switched off is the case that matters: the
+# "remove lock version file" execute exists to delete exactly that file, but
+# it is a converge-time resource, so raising here would abort the run before
+# the cleanup that would have fixed it. Fall back to the raw attribute and let
+# the converge-time block -- which runs after the cleanup, and whose value is
+# the one the install script actually uses -- raise if the pin is still
+# genuinely unresolvable by then.
+package_version = begin
+  install_version, explicit_pin, pin_source = resolve_pg_version_pin(node, postgres_version)
+  resolve_pg_package_version(known_versions, install_version, postgres_version,
+                             explicit_pin: explicit_pin, pin_source: pin_source)
+rescue RuntimeError => e
+  Chef::Log.info("ey-postgresql: deferring version resolution to converge time (#{e.message})")
+  node["postgresql"]["latest_version"]
+end
 
 execute "dropping lock version file" do
   command "echo #{running_pg_version} > #{node['lock_version_file']}"
