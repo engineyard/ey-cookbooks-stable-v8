@@ -42,6 +42,13 @@ How a newer patch build reaches instances
   changes only what a *fresh* install resolves to; it does not move existing
   instances.
 
+  When a move does happen, the `apt install` that applies it runs the PostgreSQL
+  package's standard post-install scripts, which restart the database service.
+  The move is between patch releases of the same major series, so it needs no
+  `pg_upgrade` and does not change the data directory format — but the restart
+  is part of it. To hold one specific patch and never move, enable
+  `lock_db_version` or set `EY_POSTGRES_VERSION`.
+
 Every one of these decisions is written to the converge log — at info level for
 the ordinary "resolved to this version, pinned by this" case, and at warn level
 whenever the resolved version differs from the one requested.
