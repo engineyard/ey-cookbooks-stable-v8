@@ -9,10 +9,10 @@
 #   or: bundle exec ruby spec/version_resolution_spec.rb
 #        (from cookbooks/ey-postgresql/spec/, which uses the spec/Gemfile)
 #
-# Covers (per ey-all#189 AC4, AC5):
-#   - AC4: prefix-match bug — "16.4" must not match "16.40", series at 16.10+
+# Covers:
+#   - Prefix-match bug: "16.4" must not match "16.40", series at 16.10+
 #          must resolve via component-wise Gem::Version comparison, not string prefix.
-#   - AC5: fallback to newest-in-series when pinned patch is absent.
+#   - Fallback to newest-in-series when pinned patch is absent.
 #          Explicit lock-file / EY_POSTGRES_VERSION pin honoured exactly (raises
 #          rather than silently drifting a deliberate customer pin). A node
 #          where the postgresql package is already installed (checked via
