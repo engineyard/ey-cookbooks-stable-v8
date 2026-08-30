@@ -13,8 +13,13 @@ execute "install ey-snaplock" do
   not_if "#{gem_bin_path}/gem list ey_snaplock | grep #{snaplock_version}"
 end
 
+# 1.5.1 fixes a database restore that could drop the application database
+# and then fail to recreate it on MySQL 8.0.16+, leaving the environment with
+# no database while still reporting success. It also restores the safety check
+# that refuses a restore aimed at a replica, which MySQL 8.4 had disabled by
+# removing SHOW SLAVE STATUS.
 chef_gem "ey_cloud_server" do
-  version "1.5.0"
+  version "1.5.1"
   compile_time false
 end
 
